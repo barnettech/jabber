@@ -1,0 +1,6 @@
+; $Id$
+name = Jabber 
+description = Babson developed module connect to jabber servers via xmpp.
+package = Babson Development
+core = 6.x
+dependencies[] = libraries

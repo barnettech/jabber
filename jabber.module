@@ -1,0 +1,531 @@
+<?php
+
+/**
+ * @file
+ * A module to integrate Drupal with xmpp services.
+ * Created by:  James Barnett, Babson College 2012.
+ */
+
+// Key to decrypt droogle passwords stored in the database.
+define('JABBER_KEY', 'EyE11kef00D!');
+
+
+/**
+ * Implements hook_help().
+ */
+function jabber_help($path, $arg) {
+  $output = '';
+  switch ($path) {
+    case "admin/help#jabber":
+      $output = '<p>' . t("The module connects Drupal to any xmpp jabber server") . '</p>';
+      break;
+
+    case "admin/settings/jabber":
+      $output = '<p>' . t('The jabber module allows for xmpp chatting from within your Drupal application.') . '</p>';
+      break;
+  }
+  return $output;
+}
+
+/**
+ * Implements hook_perm().
+ */
+function jabber_perm() {
+  return array('view jabber client', 'administer jabber');
+}
+
+
+/**
+ * Implements hook_menu().
+ */
+function jabber_menu() {
+  $items = array();
+  $items['jabber'] = array(
+    'title' => 'Drupal Instant Messenger',
+    'page callback' => 'jabber_main_page',
+    'access arguments' => array('view jabber client'),
+  );
+  $items['jabber/ajax/get_my_rid_sid'] = array(
+    'title' => 'jabber get an rid and sid',
+    'page callback' => 'jabber_get_login_info',
+    'access arguments' => array('view jabber client'),
+  );
+  $items['jabber/post-chat-history'] = array(
+    'title' => 'Jabber post chat history',
+    'page callback' => 'jabber_post_chat_history',
+    'access arguments' => array('view jabber client'),
+  );
+  $items['jabber/get-chat-history'] = array(
+    'title' => 'Jabber get chat history',
+    'page callback' => 'jabber_get_chat_history',
+    'access arguments' => array('view jabber client'),
+  );
+  $items['admin/settings/jabber'] = array(
+    'title' => 'Jabber Settings',
+    'description' => 'Configuration of the Jabber module.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('jabber_settings_form'),
+    'access arguments' => array('view droogle'),
+  );
+  return $items;
+}
+
+/**
+ * Uses the form api for an admin settings form.
+ */
+function jabber_settings_form(&$form_state, $edit = array()) {
+  $jabber_password_field = variable_get('jabber_password_field', '');
+  // TODO:  maybe separate the jid from the user profile email field?
+  // $jabber_username_field = variable_get('jabber_username_field', '');
+  /*$form['jabber_username_field'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Enter the profile field to pull a users google username'),
+    '#default_value' => $jabber_username_field,
+    '#size' => 60,
+    '#maxlength' => 64,
+    '#description' => t('The field to pull the users google user name (jid) if left blank the users email field will be used.'),
+  );*/
+  $form['jabber_password_field'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Enter the profile field to pull a users google password'),
+    '#default_value' => $jabber_password_field,
+    '#size' => 60,
+    '#maxlength' => 64,
+    '#description' => t('The field to pull a users google password from.'),
+  );
+  $form = system_settings_form($form);
+  return $form;
+}
+
+/**
+ * Gets chat history, for continuity between pages,
+ * and if we eventually want to allow users to access
+ * chat transcripts.
+ */
+function jabber_get_chat_history() {
+  global $user;
+  $result = db_query("SELECT conv_partner_jid, message from jabber where curr_user_jid = '%s' and window_open = 1 limit 20", $user->mail);
+  $messages = array();
+  while ($row = db_fetch_array($result)) {
+    $partner = $row['conv_partner_jid'];
+    $partner = preg_replace('/@/i', '-', $partner);
+    $partner = preg_replace('/\./i', '-', $partner);
+    if ($messages[$partner]) {
+      $messages[$partner] .= $row['message'];
+    }
+    else {
+      $messages[$partner] = $row['message'];
+    }
+  }
+  $result = db_query("SELECT distinct(conv_partner_jid) from jabber where curr_user_jid = '%s' and window_open = 1", $user->mail);
+  $messages['open_jids'] = "";
+  while ($row = db_fetch_array($result)) {
+    $partner = $row['conv_partner_jid'];
+    $partner = preg_replace('/@/i', '-', $partner);
+    $partner = preg_replace('/\./i', '-', $partner);
+    $messages['open_jids'] .= $partner . ',';
+  }
+  echo json_encode($messages);
+}
+
+/**
+ * Posts chat history to the jabber table
+ */
+function jabber_post_chat_history() {
+  global $user;
+  $curr_user_jid = $user->mail;
+  $close_window = ($_POST["close_window"]);
+  $conv_partner_jid = ($_POST["conv_partner_jid"]);
+  $jabber_message = ($_POST["jabber_message"]);
+  if ($close_window == 'yes') {
+    // About to close the window in the db curr_user_jid is ' .
+    // $curr_user_jid . ' and conv_partner_jid is ' . $conv_partner_jid.
+    db_query('UPDATE {jabber} set window_open = 0 where curr_user_jid = "%s" and conv_partner_jid = "%s"', $curr_user_jid, $conv_partner_jid);
+  }
+  else {
+    $result = db_query('INSERT into {jabber} values ("", "%s", "%s", "%s", %d, %d)', $curr_user_jid, $conv_partner_jid, $jabber_message, 1, time());
+  }
+}
+
+/**
+ * Gets secure login info to login to GTalk.
+ */
+function jabber_get_login_info() {
+  global $user;
+  global $_jabber_rid_;
+  global $_jabber_sid_;
+  $jabber_vars = array();
+  // watchdog('jabber', 'the cookie is ' . $_COOKIE['jabber_rid']);
+  // Use the below line rather than the one below it
+  // to attach to an old session between pages.
+  // if (isset($_COOKIE['jabber_rid'])) {
+  if (1 == 1) {
+    setcookie("jabber_rid", "", time() - 3600, "/");
+    setcookie("jabber_sid", "", time() - 3600, "/");
+    // watchdog('jabber', 'just deleted the jabber cookies');
+    $jabber_vars = jabber_get_rid_sid();
+  }
+  else {
+    $rid = $_COOKIE["jabber_rid"];
+    $rid = $rid + 1;
+    setcookie("jabber_rid", $rid, time() + 3600, "/");
+    // watchdog('jabber', 'didnt need to relogin using
+    // the cookie and the rid is ' . $rid);
+  }
+  if ($_SERVER['HTTP_X_REQUESTED_WITH'] == 'XMLHttpRequest') {
+    // Request identified as ajax request.
+    if ($jabber_vars['sid'] && $jabber_vars['rid']) {
+      $thesid = $jabber_vars['sid'];
+      $therid = $jabber_vars['rid'];
+      setcookie("jabber_rid", $therid, time() + 3600, "/");
+      setcookie("jabber_sid", $thesid, time() + 3600, "/");
+
+    }
+    else {
+      $thesid = $_COOKIE["jabber_sid"];
+      $therid = $_COOKIE['jabber_rid'];
+      // watchdog('jabber', 'setting the rid to the cookie ' . $therid);
+    }
+    echo json_encode(array(
+      "sid" => $thesid,
+      "rid" => $therid,
+      "jid" => $user->mail)
+      );
+  }
+  else {
+    watchdog('jabber', 'You are not an ajax call');
+  }
+}
+
+/**
+ * Increments the rid by one to send the next payload of xml. If you don't do
+ * this it wont be accepted by the server.
+ */
+function jabber_get_next_rid() {
+  global $_jabber_rid_;
+  $_jabber_rid_ = $_jabber_rid_ + 1;
+  return $_jabber_rid_;
+}
+
+/**
+ * Sends xml to the BOSH server.
+ *
+ * @param array $xmlposts
+ *   an array of xml posts to send to the bosh server.
+ *
+ * @return array
+ *   an array of responses from the BOSH server.
+ */
+function jabber_send_xml ($xmlposts) {
+  global $_jabber_rid_;
+  global $_jabber_sid_;
+  $bosh_url = 'http://bosh.metajack.im:5280/xmpp-httpbind';
+  $xml_repsonse = array();
+  $count = 0;
+  foreach ($xmlposts as $xmlpost) {
+    $count = $count + 1;
+    $_jabber_rid_ = $_jabber_rid_ + 1;
+    $ch = curl_init($bosh_url);
+    curl_setopt($ch, CURLOPT_HEADER, 0);
+    curl_setopt($ch, CURLOPT_POST, TRUE);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $xmlpost);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, TRUE);
+    $header = array('Accept-Encoding: gzip, deflate','Content-Type: text/xml; charset=utf-8');
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $header);
+    curl_setopt($ch, CURLOPT_VERBOSE, 0);
+    // Stops the dump to the screen and lets you capture it in a variable.
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $xmlpost);
+    $response = curl_exec($ch);
+    $xml_response[] = simplexml_load_string($response);
+    // Below lines are for debug.
+    // watchdog('jabber', 'here is the xml posted: ' . $xmlpost);
+    // watchdog('jabber', 'here is the response: <pre>' .
+    // print_r($xml_response, TRUE) . '</pre>');
+  }
+  curl_close($ch);
+  return $xml_response;
+}
+
+/**
+ * Connects to BOSH and establishes a sid and rid for later use.
+ */
+function jabber_get_rid_sid() {
+  global $user;
+  global $_jabber_rid_;
+  $_jabber_rid_ = rand() * 10000;
+  $rid = $_jabber_rid_;
+  global $_jabber_sid_;
+
+  // watchdog('jabber', 'got to the jabber_get_rid_sid()');
+  $xmlposts = array();
+  $xmlposts[] = "<body rid='$_jabber_rid_' xmlns='http://jabber.org/protocol/httpbind' to='babson.edu' xml:lang='en' wait='60' hold='1' window='5' content='text/xml; charset=utf-8' ver='1.6' xmpp:version='1.0' xmlns:xmpp='urn:xmpp:xbosh'/>";
+  $xml_response = jabber_send_xml($xmlposts);
+  // Below lines are for debug.
+  // watchdog('jabber', 'the sid in this object: </pre>' .
+  // print_r((string) $xml_response[0]['sid'], TRUE) . '</pre>');
+  $_jabber_sid_ = (string) $xml_response[0]['sid'];
+  $xmlposts = array();
+  // Now we get the PLAIN auth mechanism which is basically base64
+  // encoded \u0000username\u0000password string which I have blacked out here.
+  $account = user_load($user->uid);
+  $jid = $account->mail;
+  $pattern = '/\@.*/i';
+  $replacement = '';
+  $username = preg_replace($pattern, $replacement, $jid);
+  $pattern2 = '/.*@/i';
+  $domain = preg_replace($pattern2, $replacement, $jid);
+  $jabber_password_field = variable_get('jabber_password_field', '');
+  // $jabber_username_field = variable_get('jabber_username_field', '');
+  $password = $account->$jabber_password_field;
+  $decrypted = rtrim(mcrypt_decrypt(MCRYPT_RIJNDAEL_256, md5(JABBER_KEY), base64_decode($password), MCRYPT_MODE_CBC, md5(md5(JABBER_KEY))), "\0");
+  $password = $decrypted;
+  // In strophe its username@babson.edu\u0000username\u0000password
+  $thepw = base64_encode($jid . chr(0) . $username . chr(0) . $password);
+  $xmlposts[] = '<body rid="' . $_jabber_rid_ . '" xmlns="http://jabber.org/protocol/httpbind" sid="' . $_jabber_sid_ . '"><auth xmlns="urn:ietf:params:xml:ns:xmpp-sasl" mechanism="PLAIN">' . $thepw . '</auth></body>';
+  $xmlposts[] = "<body rid='" . jabber_get_next_rid() . "' xmlns='http://jabber.org/protocol/httpbind' sid='$_jabber_sid_' to='babson.edu' xml:lang='en' xmpp:restart='true' xmlns:xmpp='urn:xmpp:xbosh'/>";
+  $xmlposts[] = "<body rid='" . jabber_get_next_rid() . "' xmlns='http://jabber.org/protocol/httpbind' sid='$_jabber_sid_'><iq type='set' id='_bind_auth_2' xmlns='jabber:client'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'/></iq></body>";
+  $xmlposts[] = "<body rid='" . jabber_get_next_rid() . "' xmlns='http://jabber.org/protocol/httpbind' sid='$_jabber_sid_'><iq type='set' id='_session_auth_2' xmlns='jabber:client'><session xmlns='urn:ietf:params:xml:ns:xmpp-session'/></iq></body>";
+  // Below line is an example if you want to test sending an actual chat
+  // message.
+  // $xmlposts[] = "<body rid='" . jabber_get_next_rid() . "' xmlns='http://jabber.org/protocol/httpbind' sid='$_jabber_sid_'><message to='jid@gmail.com' type='chat' xmlns='jabber:client'><body>test helloworld from my php xmpp api!</body><active xmlns='http://jabber.org/protocol/chatstates'/></message></body>";
+  $xml_response = jabber_send_xml($xmlposts);
+  $jabber_rid = jabber_get_next_rid();
+  // watchdog('jabber compare', 'just set the rid: ' . $jabber_rid .
+  // ' and the old is ' . $_jabber_rid_);
+  // watchdog('jabber compare', 'the sid at this point is ' . $_jabber_sid_);
+  $jabber_return = array();
+  $jabber_return['sid'] = $_jabber_sid_;
+  $jabber_return['rid'] = $jabber_rid;
+  return $jabber_return;
+}
+
+
+/**
+ * Implements hook_block().
+ */
+function jabber_block($op = 'list',$delta = array(),$edit = array()) {
+  switch ($op) {
+    case 'list':
+      $blocks[0]['info'] = t('Jabber Block');
+      $blocks[1]['info'] = t('Jabber Chat Block');
+      return $blocks;
+      break;
+
+    case 'view':
+      switch ($delta) {
+        case 0:
+          $content = theme('jabber_show_contacts');
+          $blocks['subject'] = t('Jabber Block');
+          $blocks['content'] = $content;
+          break;
+
+        case 1:
+          $content = theme('jabber_show_chat_area');
+          $blocks['subject'] = t('Jabber Chat Block');
+          $blocks['content'] = $content;
+      }
+      return $blocks;
+
+
+  }
+}
+
+/**
+ * Implements hook_theme().
+ *
+ * Information on hook theme http://groups.drupal.org/node/14274#comment-57950.
+ *    1. hook_theme which adds an array of callbacks and their arguments to the
+ *      theme registry. I didn't realize that I had to visit the modules page to
+ *      rebuild the theme registry before it would be added.
+ *    2. The themable function itself which starts with theme_ followed by the
+ *      function name that was added to the registry with hook_theme.
+ *    3. theme("whatever_function, $whatever_argument, $whatever_argument ")
+ *     which actually calls the function.
+ */
+function jabber_theme() {
+  return array(
+    'jabber_show_contacts' => array(),
+    'jabber_show_chat_area' => array(),
+  );
+}
+
+/**
+ * Implements of hook_theme().
+ *
+ * @return string
+ *   Html with listing of contacts to be output to the screen.
+ *   These contact names are clickable to begin a chat.
+ */
+function theme_jabber_show_contacts() {
+  return jabber_get_content();
+}
+
+/**
+ * Implements of hook_theme().
+ *
+ * @return string
+ *   Html with the jabber chat area to be output to the screen.
+ */
+function theme_jabber_show_chat_area() {
+  return jabber_get_content2();
+}
+
+
+/**
+ * Prints the output of the chat area for jabber.
+ */
+function jabber_get_content2() {
+  if ($path = libraries_get_path('jquery.ui')) {
+    drupal_add_js($path . '/ui/ui.core.js');
+    drupal_add_js($path . '/ui/ui.tabs.js');
+    drupal_add_css($path . '/themes/base/jquery-ui.css');
+    drupal_add_css($path . '/themes/base/ui.tabs.css');
+  }
+  drupal_add_js(drupal_get_path('module', 'jabber') . '/js/jabber.js');
+  drupal_add_css(drupal_get_path('module', 'jabber') . '/css/jabber.css');
+  $content = "";
+  $content = "
+     <div id='chat-area'>
+      <ul></ul>
+     </div>";
+  return $content;
+}
+
+/**
+ * Gets chat page to be displayed elsewhere like in a block.
+ */
+function jabber_get_content() {
+  global $user;
+  // drupal_add_js(drupal_get_path('module', 'jabber') . '/js/sjcl.js');
+  if ($path = libraries_get_path('jquery.ui')) {
+    drupal_add_js($path . '/ui/ui.core.js');
+    drupal_add_js($path . '/ui/ui.dialog.js');
+    drupal_add_js($path . '/ui/ui.tabs.js');
+    drupal_add_js($path . '/ui/ui.accordion.js');
+    drupal_add_js($path . '/ui/jquery.json-2.3.min.js');
+  }
+  drupal_add_js(drupal_get_path('module', 'jabber') . '/js/strophe.js');
+  drupal_add_js(drupal_get_path('module', 'jabber') . '/js/flXHR.js');
+  drupal_add_js(drupal_get_path('module', 'jabber') . '/js/strophe.flxhr.js');
+  drupal_add_css(drupal_get_path('module', 'jabber') . '/css/gab.css');
+  drupal_add_js(drupal_get_path('module', 'jabber') . '/js/jabber_gab.js');
+  drupal_add_js(drupal_get_path('module', 'jabber') . '/js/jabber.js');
+  drupal_add_css(drupal_get_path('module', 'jabber') . '/css/jabber.css');
+
+  $persons_groups = db_query('SELECT og_uid.nid, node.title from og_uid, node where node.nid = og_uid.nid and og_uid.uid = %d limit 20', $user->uid);
+  $person_detail_sql = "SELECT CONCAT(pv.value,' ', pv2.value) as full_name, u.uid AS uid, u.name as name, u.picture as picture, u.mail as mail FROM {users} u 
+    INNER JOIN {profile_values} pv ON u.uid = pv.uid 
+    INNER JOIN {profile_fields} pf ON pv.fid = pf.fid
+    INNER JOIN {profile_values} pv2 ON u.uid = pv2.uid 
+    INNER JOIN {profile_fields} pf2 ON pv2.fid = pf2.fid
+    INNER JOIN {og_uid} ou ON u.uid = ou.uid
+    WHERE pv.fid = 1 and pv2.fid = 6
+    AND ou.nid = %d";
+  $my_groups = array();
+  $content = "<div id='roster-area'><ul>";
+  $content .= '<div id="accordion">';
+  $count = 0;
+  $content .= '<h3><a class="og-chat-group" href="#">' . t("Your GTALK Contacts") . '</a></h3><div><div id="gtalk-contacts"></div>';
+  $content .= '</div>';
+  while ($row = db_fetch_array($persons_groups)) {
+    $count = $count + 1;
+    $content .= '<h3><a class="og-chat-group" href="#">' . $row['title'] . '</a></h3>';
+    $content .= '<div>';
+    $group_members = db_query($person_detail_sql, $row['nid']);
+    while ($row2 = db_fetch_array($group_members)) {
+      if (isset($row2['picture']) && $row2['picture'] != "") {
+        $picture = "";
+        $account = user_load($row2['uid']);
+        $account->preset = 'user_picture_meta';
+        $account->no_link = TRUE;
+        $picture = theme('user_picture', $account);
+      }
+      if (!$row2['picture']) {
+        $picture = "";
+      }
+      $pattern = '/@/i';
+      $pattern2 = '/\./i';
+      $replacement = '-';
+      $jid_id = preg_replace($pattern, $replacement, $row2['mail']);
+      $jid_id = preg_replace($pattern2, $replacement, $jid_id);
+      $content .= "<li id='" . $jid_id . "'>&nbsp;";
+      // $content .= "<li id='hello'> hi";
+      $content .= "<div class='roster-contact offline'><div class='roster-name'>" . $picture .  " " . $row2['full_name'] . "</div>
+       <div class='roster-jid'>" . $row2['mail'] . "</div></div>";
+      $content .= "</li>";
+    }
+    // End of one accordion section is set by the closing div below.
+    $content .= '</div>';
+  }
+  // End of accordion div is below.
+  $content .= '</div>';
+  // End of roster-area div is below.
+  $content .= '</ul></div>';
+  $content .= "
+    <div id='toolbar'>
+      <span class='chat-button' id='new-contact'><button type='button'> " . t('Add Contact') . "</button></span> ||
+      <span class='chat-button' id='new-chat'><button type='button'>" . t('Chat With ...') . "</button></span> ||
+      <span class='chat-button' id='disconnect'><button type='button'>" . t('Disconnect') . "</button></span>
+      <span class='chat-button' id='away'><button type='button'>" . t('Show as Away') . "</button></span>
+      <span class='chat-button' id='present'><button type='button'>" . t('Show as Present') . "</button></span>
+      <!-- examples below of how to transform any name on the page to show presence -->
+      <!--<div class='username-babson-edu toggle-presence online'>
+        Aryeh Dov
+      </div>
+      <div class='username-gmail-com toggle-presence online'>
+        John Dov
+      </div>
+      <div class='username-babson-edu toggle-presence online'>
+        FirstName LastName
+      </div>-->
+
+    <!-- contact dialog -->
+    <div id='contact_dialog' class='hidden'>
+      <label>JID:</label><input type='text' id='contact-jid'>
+      <label>Name:</label><input type='text' id='contact-name'>
+    </div>
+
+    <!-- chat dialog -->
+    <div id='chat_dialog' class='hidden'>
+      <label>JID:</label><input type='text' id='chat-jid'>
+    </div>
+
+    <!-- approval dialog -->
+    <div id='approve_dialog' class='hidden'>
+      <p><span id='approve-jid'></span>" . t('has requested a subscription
+        to your presence.  Approve or deny?') . "</p>
+    </div>";
+    return $content;
+}
+
+/**
+ * Displays a chat.
+ */
+function jabber_main_page() {
+  $content = theme('jabber_show_contacts');
+  $content .= theme('jabber_show_chat_area');
+  return $content;
+}
+
+/**
+ * Implements hook form alter.
+ */
+function jabber_form_alter(&$form, $form_state, $form_id) {
+  if ($form_id == 'user_profile_form') {
+    array_unshift($form['#submit'], 'jabber_profile_submit');
+  }
+}
+
+/**
+ * Implements hook form submit.
+ */
+function jabber_profile_submit($form, &$form_state) {
+  global $user;
+  $jabber_password_field = variable_get('jabber_password_field', '');
+  $account = user_load($user->uid);
+  $password = $form_state['values'][$jabber_password_field];
+  $encrypted = base64_encode(mcrypt_encrypt(MCRYPT_RIJNDAEL_256, md5(JABBER_KEY), $password, MCRYPT_MODE_CBC, md5(md5(JABBER_KEY))));
+
+  $form_state['values'][$jabber_password_field] = $encrypted;
+}

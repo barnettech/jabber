@@ -1,0 +1,70 @@
+<?php
+/**
+ * @file
+ * Install file for the jabber drupal module
+ *
+ */
+
+/**
+ * Implements hook_install().
+ */
+function jabber_install() {
+  drupal_install_schema('jabber');
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function jabber_uninstall() {
+  $result = db_query('DELETE from system WHERE name = "jabber"');
+  drupal_uninstall_schema('jabber');
+}
+
+/**
+ * Implements hook schema
+ */
+function jabber_schema() {
+  $schema['jabber'] = array(
+    'description' => 'Jabber chat history table for one on one conversations',
+    'fields' => array(
+      'mid'  => array(
+        'description' => 'the unique message id for the stanza sent',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE),
+      'curr_user_jid'  => array(
+        'description' => 'the current users jid',
+        'type' => 'varchar',
+        'length' => 200,
+        'not null' => TRUE,
+        'default' => ''),
+      'conv_partner_jid'  => array(
+        'description' => 'Conversation partner',
+        'type' => 'varchar',
+        'length' => 200,
+        'not null' => TRUE,
+        'default' => ''),
+      'message'  => array(
+        'description' => 'The message sent',
+        'type' => 'varchar',
+        'length' => 1000,
+        'not null' => TRUE,
+        'default' => ''),
+      'window_open' => array(
+        'description' => 'Whether or not the window was left open so we can save state between pages 1 is true, 0 or null is false',
+        'type' => 'int',
+        'not null' => FALSE,
+        'default' => 0),
+      'timestamp' => array(
+        'description' => 'The Unix timestamp at which the read occurred.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0),
+    ),
+    'primary key' => array('mid'),
+    'indexes' => array(
+      'window_open' => array('window_open'),
+    ),
+  );
+    return $schema;
+}

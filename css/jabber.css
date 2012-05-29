@@ -1,0 +1,29 @@
+.picture {
+  display: inline;
+}
+.roster-contact {
+  width: 12em;
+  // float: left;
+  // clear: both;
+}
+.roster-name {
+  // clear: both;
+}
+/*#roster-area {
+overflow-y: scroll;
+}
+#roster-area ul{
+  height: 350px;
+  overflow: scroll;
+}*/
+.block-jabber .content {
+  height: 400px;
+  overflow: scroll;
+}
+
+.roster-jid {
+  display: none;
+}
+.ui-tabs-panel {
+  // width: 100px;
+}
